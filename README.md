@@ -73,7 +73,11 @@ If routing stops with a retained provisional path, click its **NOAA interrupted*
 or **ECMWF interrupted** endpoint label to reopen that model's explanation.
 The dashed paths remain incomplete after dismissal, never completed or saved
 as successful routes. Supporting forecast-coverage diagnostics expand under
-**Technical details**. Route-point telemetry is separate and unchanged.
+**Technical details**. **Copy messages** copies the popup's current model scope
+and global notices, including headings, model and leg labels, interruption status,
+and technical details even when collapsed. Copying does not close the popup or
+change its model selection; clipboard unavailability or failure is reported there.
+Route-point telemetry is separate and unchanged.
 
 Settings are grouped by frequency: departure, forecasts and data, boat and
 polar, routing and coastlines, advanced controls, and appearance. Forecast

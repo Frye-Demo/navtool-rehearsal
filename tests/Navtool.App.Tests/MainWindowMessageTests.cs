@@ -18,6 +18,181 @@ namespace Navtool.App.Tests;
 
 public sealed class MainWindowMessageTests
 {
+    [AvaloniaTheory]
+    [InlineData(ForecastModel.NoaaGfs, "NOAA GFS", "NOAA stopped.", "ECMWF stopped.")]
+    [InlineData(ForecastModel.EcmwfIfs, "ECMWF IFS", "ECMWF stopped.", "NOAA stopped.")]
+    public async Task Copy_messages_uses_popup_model_scope_and_global_notices(
+        ForecastModel selected, string name, string expected, string excluded)
+    {
+        using var fixture = new MessageWindow();
+        var (window, model) = (fixture.Window, fixture.Model);
+        model.Map.Navigator.CenterOnAndZoomTo(MapProjection.ToMapPoint(new Coordinate(0, 0)), 10_000);
+        model.SetRoutingFailure(ForecastModel.NoaaGfs, 0, "NOAA stopped.", new Coordinate(0, 0));
+        model.SetRoutingFailure(ForecastModel.EcmwfIfs, 1, "ECMWF stopped.", new Coordinate(0, 1));
+        model.WarningMessage = "Global forecast notice.";
+        Dispatcher.UIThread.RunJobs();
+        var opener = window.FindControl<Canvas>("InterruptedEndpointLayer")!.Children.OfType<Button>()
+            .Single(button => (string?)button.Tag == $"route:{selected}:{(selected == ForecastModel.NoaaGfs ? 0 : 1)}");
+        opener.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        Dispatcher.UIThread.RunJobs();
+        var copy = window.FindControl<Button>("CopyMessagesButton")!;
+        copy.Focus();
+        string? copied = null;
+
+        await window.CopyMessagesAsync(text => { copied = text; return Task.CompletedTask; });
+
+        Assert.NotNull(copied);
+        Assert.StartsWith($"{name} interrupted", copied);
+        Assert.Contains($"{name} / leg {(selected == ForecastModel.NoaaGfs ? 1 : 2)}", copied);
+        Assert.Contains(expected, copied);
+        Assert.Contains("Notice" + Environment.NewLine + "Warning" + Environment.NewLine + "Global forecast notice.", copied);
+        Assert.DoesNotContain(excluded, copied);
+        Assert.Contains("Warning - Interrupted", copied);
+        Assert.Contains("Incomplete: the dashed paths are not completed routes.", copied);
+        Assert.True(window.IsMessagePopupOpen);
+        Assert.True(copy.IsFocused);
+        Assert.Equal($"{name} interrupted", window.FindControl<TextBlock>("MessagePopupTitle")!.Text);
+        Assert.Equal("Messages copied.", window.FindControl<TextBlock>("MessageCopyStatus")!.Text);
+        window.KeyPress(Key.Escape, RawInputModifiers.None, PhysicalKey.Escape, "\u001b");
+        Assert.False(window.IsMessagePopupOpen);
+        Assert.True(opener.IsFocused);
+    }
+
+    [AvaloniaFact]
+    public async Task Copy_button_includes_all_models_and_collapsed_details_without_resetting_scroll()
+    {
+        using var fixture = new MessageWindow();
+        var (window, model) = (fixture.Window, fixture.Model);
+        var summary = string.Join(" ", Enumerable.Repeat("NOAA search stopped.", 120));
+        model.SetRoutingFailure(ForecastModel.NoaaGfs, 2,
+            summary + " The loaded forecast covers the requested passage.", new Coordinate(0, 0));
+        model.SetRoutingFailure(ForecastModel.EcmwfIfs, 0, "ECMWF coverage missing.");
+        Dispatcher.UIThread.RunJobs();
+        Click(window, "MessagesButton");
+        var details = Assert.Single(window.FindControl<StackPanel>("MessageItems")!.GetVisualDescendants().OfType<Expander>());
+        Assert.False(details.IsExpanded);
+        var scroll = window.FindControl<ScrollViewer>("MessageScrollViewer")!;
+        scroll.Offset = new Vector(0, 180);
+        Dispatcher.UIThread.RunJobs();
+        var offset = scroll.Offset;
+        Assert.True(offset.Y > 0);
+        Assert.NotNull(window.Clipboard);
+        await window.Clipboard!.ClearAsync();
+
+        Click(window, "CopyMessagesButton");
+        var copied = await window.Clipboard.GetTextAsync();
+
+        Assert.Equal(string.Join(Environment.NewLine + Environment.NewLine,
+            "Routing interrupted",
+            "Incomplete: the dashed paths are not completed routes. Recalculate to try again.",
+            string.Join(Environment.NewLine, "NOAA GFS / leg 3", "Warning - Interrupted", summary,
+                "Technical details", "The loaded forecast covers the requested passage."),
+            string.Join(Environment.NewLine, "ECMWF IFS / leg 1", "Error", "ECMWF coverage missing.")), copied);
+        Assert.Equal(offset, scroll.Offset);
+        Assert.False(details.IsExpanded);
+        Assert.True(window.IsMessagePopupOpen);
+    }
+
+    [AvaloniaFact]
+    public async Task Copy_messages_reports_unavailable_clipboard_and_failure_then_allows_retry()
+    {
+        using var fixture = new MessageWindow();
+        var (window, model) = (fixture.Window, fixture.Model);
+        model.WarningMessage = "Original notice.";
+        Dispatcher.UIThread.RunJobs();
+        Click(window, "MessagesButton");
+        var status = window.FindControl<TextBlock>("MessageCopyStatus")!;
+
+        await window.CopyMessagesAsync(null);
+        Assert.Equal("Clipboard is unavailable on this platform.", status.Text);
+        Assert.Contains("error", status.Classes);
+        Assert.True(status.IsEffectivelyVisible);
+        await window.CopyMessagesAsync(_ => Task.FromException(new IOException("Clipboard busy.")));
+        Assert.Equal("Copying messages failed: Clipboard busy.", status.Text);
+        Assert.Contains("error", status.Classes);
+        Assert.True(window.IsMessagePopupOpen);
+        Assert.True(window.FindControl<Button>("CloseMessagesButton")!.IsFocused);
+        Assert.Single(model.CurrentMessages);
+
+        string? copied = null;
+        await window.CopyMessagesAsync(text => { copied = text; return Task.CompletedTask; });
+        Assert.Equal(string.Join(Environment.NewLine + Environment.NewLine, "Messages",
+            string.Join(Environment.NewLine, "Notice", "Warning", "Original notice.")), copied);
+        Assert.Equal("Messages copied.", status.Text);
+        Assert.DoesNotContain("error", status.Classes);
+        Click(window, "CloseMessagesButton");
+        Assert.False(window.IsMessagePopupOpen);
+        Assert.True(window.FindControl<Button>("MessagesButton")!.IsFocused);
+    }
+
+    [AvaloniaFact]
+    public async Task Copy_messages_reports_expected_platform_failures_and_allows_retry()
+    {
+        using var fixture = new MessageWindow();
+        var (window, model) = (fixture.Window, fixture.Model);
+        model.WarningMessage = "Original notice.";
+        Dispatcher.UIThread.RunJobs();
+        Click(window, "MessagesButton");
+        var status = window.FindControl<TextBlock>("MessageCopyStatus")!;
+        Exception[] failures =
+        [
+            new InvalidOperationException("Clipboard busy."),
+            new NotSupportedException("Clipboard not supported."),
+            new System.Runtime.InteropServices.ExternalException("Native clipboard failed.")
+        ];
+
+        foreach (var failure in failures)
+        {
+            await window.CopyMessagesAsync(_ => Task.FromException(failure));
+
+            Assert.Equal($"Copying messages failed: {failure.Message}", status.Text);
+            Assert.Contains("error", status.Classes);
+            Assert.True(window.IsMessagePopupOpen);
+            await window.CopyMessagesAsync(_ => Task.CompletedTask);
+            Assert.Equal("Messages copied.", status.Text);
+            Assert.DoesNotContain("error", status.Classes);
+        }
+    }
+
+    [AvaloniaFact]
+    public async Task Copy_messages_propagates_unexpected_failures_and_releases_copy_guard()
+    {
+        using var fixture = new MessageWindow();
+        var (window, model) = (fixture.Window, fixture.Model);
+        model.WarningMessage = "Original notice.";
+        Dispatcher.UIThread.RunJobs();
+        Click(window, "MessagesButton");
+        var failure = new ArgumentException("Unexpected writer defect.");
+
+        var thrown = await Assert.ThrowsAsync<ArgumentException>(() =>
+            window.CopyMessagesAsync(_ => Task.FromException(failure)));
+
+        Assert.Same(failure, thrown);
+        string? copied = null;
+        await window.CopyMessagesAsync(text => { copied = text; return Task.CompletedTask; });
+        Assert.NotNull(copied);
+        Assert.Contains("Original notice.", copied);
+        Assert.Equal("Messages copied.", window.FindControl<TextBlock>("MessageCopyStatus")!.Text);
+    }
+
+    [AvaloniaFact]
+    public async Task Pending_copy_does_not_overwrite_status_for_a_reopened_popup()
+    {
+        using var fixture = new MessageWindow();
+        var (window, model) = (fixture.Window, fixture.Model);
+        model.WarningMessage = "Original notice.";
+        Dispatcher.UIThread.RunJobs();
+        var completion = new TaskCompletionSource();
+        var copying = window.CopyMessagesAsync(_ => completion.Task);
+        Assert.Equal("Copying messages...", window.FindControl<TextBlock>("MessageCopyStatus")!.Text);
+        Click(window, "CloseMessagesButton");
+        Click(window, "MessagesButton");
+        completion.SetResult();
+        await copying;
+        Assert.Equal(string.Empty, window.FindControl<TextBlock>("MessageCopyStatus")!.Text);
+        Assert.True(window.IsMessagePopupOpen);
+    }
+
     [AvaloniaFact]
     public void Outcome_opens_after_calculation_and_dismissal_survives_unrelated_updates()
     {

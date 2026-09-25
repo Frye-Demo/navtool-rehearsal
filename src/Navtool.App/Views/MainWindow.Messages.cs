@@ -22,6 +22,8 @@ public partial class MainWindow
     private bool _autoMessagePending;
     private ForecastModel? _messageModel;
     private Control? _messageOpener;
+    private bool _copyingMessages;
+    private long _messagePresentationVersion;
     private readonly List<(RoutingMessage Message, Button Button, Line Connector)> _endpointButtons = [];
 
     internal bool IsMessagePopupOpen => this.FindControl<Border>("MessagePopup")!.IsVisible;
@@ -95,17 +97,13 @@ public partial class MainWindow
 
     private void RenderMessageContents()
     {
+        _messagePresentationVersion++;
+        SetMessageCopyStatus(string.Empty);
         if (_messageModel is { } selected && !_messages.Any(message => message.Model == selected))
             _messageModel = null;
-        var visible = _messages.Where(message => _messageModel is null ||
-            message.Model is null || message.Model == _messageModel).ToArray();
+        var visible = GetVisibleMessages();
         var interrupted = visible.Any(message => message.IsInterrupted);
-        this.FindControl<TextBlock>("MessagePopupTitle")!.Text = _messageModel switch
-        {
-            ForecastModel.NoaaGfs => "NOAA GFS interrupted",
-            ForecastModel.EcmwfIfs => "ECMWF IFS interrupted",
-            _ => interrupted ? "Routing interrupted" : "Messages"
-        };
+        this.FindControl<TextBlock>("MessagePopupTitle")!.Text = GetMessageTitle(visible);
         this.FindControl<TextBlock>("MessageIncompleteText")!.IsVisible = interrupted;
         var items = this.FindControl<StackPanel>("MessageItems")!;
         items.Children.Clear();
@@ -129,6 +127,81 @@ public partial class MainWindow
         }
     }
 
+    private RoutingMessage[] GetVisibleMessages() =>
+        _messages.Where(message => _messageModel is null ||
+            message.Model is null || message.Model == _messageModel).ToArray();
+
+    private string GetMessageTitle(IReadOnlyList<RoutingMessage> messages) => _messageModel switch
+    {
+        ForecastModel.NoaaGfs => "NOAA GFS interrupted",
+        ForecastModel.EcmwfIfs => "ECMWF IFS interrupted",
+        _ => messages.Any(message => message.IsInterrupted) ? "Routing interrupted" : "Messages"
+    };
+
+    private async void OnCopyMessagesClicked(object? sender, RoutedEventArgs e)
+    {
+        e.Handled = true;
+        var clipboard = Clipboard;
+        await CopyMessagesAsync(clipboard is null ? null : text => clipboard.SetTextAsync(text));
+    }
+
+    internal async Task CopyMessagesAsync(Func<string, Task>? writeText)
+    {
+        if (_copyingMessages || !IsMessagePopupOpen) return;
+        if (writeText is null)
+        {
+            SetMessageCopyStatus("Clipboard is unavailable on this platform.", error: true);
+            return;
+        }
+
+        var visible = GetVisibleMessages();
+        var sections = new List<string> { GetMessageTitle(visible) };
+        if (visible.Any(message => message.IsInterrupted))
+            sections.Add(this.FindControl<TextBlock>("MessageIncompleteText")!.Text!);
+        foreach (var message in visible)
+        {
+            var lines = new List<string>
+            {
+                message.Heading,
+                message.IsInterrupted ? $"{message.Severity} - Interrupted" : message.Severity.ToString(),
+                message.Summary
+            };
+            if (message.Details is { } details)
+            {
+                lines.Add("Technical details");
+                lines.Add(details);
+            }
+            sections.Add(string.Join(Environment.NewLine, lines));
+        }
+
+        var version = _messagePresentationVersion;
+        _copyingMessages = true;
+        SetMessageCopyStatus("Copying messages...");
+        try
+        {
+            await writeText(string.Join(Environment.NewLine + Environment.NewLine, sections));
+            if (version == _messagePresentationVersion)
+                SetMessageCopyStatus("Messages copied.");
+        }
+        catch (Exception exception) when (exception is IOException or InvalidOperationException or
+            NotSupportedException or System.Runtime.InteropServices.ExternalException)
+        {
+            if (version == _messagePresentationVersion)
+                SetMessageCopyStatus($"Copying messages failed: {exception.Message}", error: true);
+        }
+        finally
+        {
+            _copyingMessages = false;
+        }
+    }
+
+    private void SetMessageCopyStatus(string text, bool error = false)
+    {
+        var status = this.FindControl<TextBlock>("MessageCopyStatus")!;
+        status.Text = text;
+        status.Classes.Set("error", error);
+    }
+
     private void OnCloseMessagesClicked(object? sender, RoutedEventArgs e)
     {
         e.Handled = true;
@@ -137,6 +210,7 @@ public partial class MainWindow
 
     private void CloseMessages(bool restoreFocus = true)
     {
+        _messagePresentationVersion++;
         this.FindControl<Border>("MessagePopup")!.IsVisible = false;
         if (restoreFocus)
         {

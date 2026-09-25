@@ -706,7 +706,7 @@
                     BorderBrush="{DynamicResource WarningTextColor}" BorderThickness="2"
                     BoxShadow="0 8 30 0 #60000000"
                     AutomationProperties.Name="Routing messages">
-                <Grid RowDefinitions="Auto,*" RowSpacing="12">
+                <Grid RowDefinitions="Auto,*,Auto" RowSpacing="12">
                     <Grid ColumnDefinitions="*,Auto" ColumnSpacing="10">
                         <TextBlock x:Name="MessagePopupTitle" Text="Messages" FontSize="19"
                                    FontWeight="SemiBold" TextWrapping="Wrap" VerticalAlignment="Center" />
@@ -722,6 +722,12 @@
                             <StackPanel x:Name="MessageItems" Spacing="12" />
                         </StackPanel>
                     </ScrollViewer>
+                    <StackPanel Grid.Row="2" Spacing="4">
+                        <Button x:Name="CopyMessagesButton" Content="Copy messages"
+                                Click="OnCopyMessagesClicked" AutomationProperties.Name="Copy messages" />
+                        <TextBlock x:Name="MessageCopyStatus" MinHeight="18" TextWrapping="Wrap"
+                                   AutomationProperties.LiveSetting="Polite" />
+                    </StackPanel>
                 </Grid>
             </Border>
 
