@@ -126,6 +126,56 @@ public sealed class MainWindowMessageTests
     }
 
     [AvaloniaFact]
+    public async Task Copy_messages_reports_expected_platform_failures_and_allows_retry()
+    {
+        using var fixture = new MessageWindow();
+        var (window, model) = (fixture.Window, fixture.Model);
+        model.WarningMessage = "Original notice.";
+        Dispatcher.UIThread.RunJobs();
+        Click(window, "MessagesButton");
+        var status = window.FindControl<TextBlock>("MessageCopyStatus")!;
+        Exception[] failures =
+        [
+            new InvalidOperationException("Clipboard busy."),
+            new NotSupportedException("Clipboard not supported."),
+            new System.Runtime.InteropServices.ExternalException("Native clipboard failed.")
+        ];
+
+        foreach (var failure in failures)
+        {
+            await window.CopyMessagesAsync(_ => Task.FromException(failure));
+
+            Assert.Equal($"Copying messages failed: {failure.Message}", status.Text);
+            Assert.Contains("error", status.Classes);
+            Assert.True(window.IsMessagePopupOpen);
+            await window.CopyMessagesAsync(_ => Task.CompletedTask);
+            Assert.Equal("Messages copied.", status.Text);
+            Assert.DoesNotContain("error", status.Classes);
+        }
+    }
+
+    [AvaloniaFact]
+    public async Task Copy_messages_propagates_unexpected_failures_and_releases_copy_guard()
+    {
+        using var fixture = new MessageWindow();
+        var (window, model) = (fixture.Window, fixture.Model);
+        model.WarningMessage = "Original notice.";
+        Dispatcher.UIThread.RunJobs();
+        Click(window, "MessagesButton");
+        var failure = new ArgumentException("Unexpected writer defect.");
+
+        var thrown = await Assert.ThrowsAsync<ArgumentException>(() =>
+            window.CopyMessagesAsync(_ => Task.FromException(failure)));
+
+        Assert.Same(failure, thrown);
+        string? copied = null;
+        await window.CopyMessagesAsync(text => { copied = text; return Task.CompletedTask; });
+        Assert.NotNull(copied);
+        Assert.Contains("Original notice.", copied);
+        Assert.Equal("Messages copied.", window.FindControl<TextBlock>("MessageCopyStatus")!.Text);
+    }
+
+    [AvaloniaFact]
     public async Task Pending_copy_does_not_overwrite_status_for_a_reopened_popup()
     {
         using var fixture = new MessageWindow();

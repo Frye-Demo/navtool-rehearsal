@@ -154,7 +154,7 @@ public partial class MainWindow
             return;
         }
 
-        var visible = _messages.ToArray();
+        var visible = GetVisibleMessages();
         var sections = new List<string> { GetMessageTitle(visible) };
         if (visible.Any(message => message.IsInterrupted))
             sections.Add(this.FindControl<TextBlock>("MessageIncompleteText")!.Text!);
@@ -183,7 +183,8 @@ public partial class MainWindow
             if (version == _messagePresentationVersion)
                 SetMessageCopyStatus("Messages copied.");
         }
-        catch (Exception exception)
+        catch (Exception exception) when (exception is IOException or InvalidOperationException or
+            NotSupportedException or System.Runtime.InteropServices.ExternalException)
         {
             if (version == _messagePresentationVersion)
                 SetMessageCopyStatus($"Copying messages failed: {exception.Message}", error: true);
